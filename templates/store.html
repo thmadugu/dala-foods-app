@@ -1,0 +1,53 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Store - Dala Foods</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+</head>
+<body>
+<nav class="navbar navbar-expand-lg navbar-dark bg-primary">
+  <div class="container-fluid">
+    <a class="navbar-brand" href="{{ url_for('dashboard') }}">Dala Foods</a>
+    <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#navbarNav">
+      <span class="navbar-toggler-icon"></span>
+    </button>
+    <div class="collapse navbar-collapse" id="navbarNav">
+      <ul class="navbar-nav ms-auto">
+        <li class="nav-item"><a class="nav-link" href="{{ url_for('dashboard') }}">Dashboard</a></li>
+        <li class="nav-item"><a class="nav-link" href="{{ url_for('production') }}">Production</a></li>
+        <li class="nav-item"><a class="nav-link" href="{{ url_for('store') }}">Store</a></li>
+        <li class="nav-item"><a class="nav-link" href="{{ url_for('logout') }}">Logout</a></li>
+      </ul>
+    </div>
+  </div>
+</nav>
+
+<div class="container my-4">
+    <h2>Store Inventory</h2>
+    <form method="POST" class="mb-4">
+        <div class="mb-2">
+            <input type="text" name="item_name" class="form-control" placeholder="Item Name" required>
+        </div>
+        <div class="mb-2">
+            <input type="number" name="quantity" class="form-control" placeholder="Quantity" required>
+        </div>
+        <div class="mb-2">
+            <input type="text" name="unit" class="form-control" placeholder="Unit" required>
+        </div>
+        <button type="submit" class="btn btn-success">Add Item</button>
+    </form>
+
+    <h5>Current Inventory</h5>
+    <div class="row">
+        {% for item in items %}
+        <div class="col-12 col-md-6 mb-2">
+            <div class="card p-2 {% if item[2] <= 10 %}bg-danger text-white{% endif %}">
+                {{ item[1] }} - {{ item[2] }} {{ item[3] }} (Added: {{ item[4] }})
+            </div>
+        </div>
+        {% endfor %}
+    </div>
+</div>
+</body>
+</html>
