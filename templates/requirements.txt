@@ -1,5 +1,5 @@
-Flask
+flask
+flask-sqlalchemy
+flask-login
 gunicorn
 psycopg2-binary
-werkzeug
-twilio
