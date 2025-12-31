@@ -1,224 +1,98 @@
-from flask import Flask, render_template, request, redirect, url_for, session, Response
-import sqlite3
+from flask import Flask, render_template, request, redirect, url_for, session, flash
+from flask_sqlalchemy import SQLAlchemy
+from werkzeug.security import generate_password_hash, check_password_hash
 import os
 
 app = Flask(__name__)
-app.secret_key = os.environ.get("SECRET_KEY", "dala_foods_secret_key")
 
-DB_NAME = "dala_foods.db"
+# ================= CONFIG =================
+app.secret_key = os.environ.get("SECRET_KEY", "change-this-secret")
 
-# ---------------- DATABASE CONNECTION ----------------
-def get_db():
-    conn = sqlite3.connect(DB_NAME)
-    conn.row_factory = sqlite3.Row
-    return conn
+DATABASE_URL = os.environ.get("DATABASE_URL", "sqlite:///dala_foods.db")
+if DATABASE_URL.startswith("postgres://"):
+    DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql://", 1)
 
-# ---------------- HOME ----------------
+app.config["SQLALCHEMY_DATABASE_URI"] = DATABASE_URL
+app.config["SQLALCHEMY_TRACK_MODIFICATIONS"] = False
+
+db = SQLAlchemy(app)
+
+# ================= MODELS =================
+class User(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    username = db.Column(db.String(80), unique=True, nullable=False)
+    email = db.Column(db.String(120), unique=True, nullable=False)
+    password_hash = db.Column(db.String(200), nullable=False)
+    role = db.Column(db.String(50), nullable=False)  # admin, staff, store
+
+    def set_password(self, password):
+        self.password_hash = generate_password_hash(password)
+
+    def check_password(self, password):
+        return check_password_hash(self.password_hash, password)
+
+# ================= CREATE TABLES =================
+with app.app_context():
+    db.create_all()
+
+# ================= ROUTES =================
 @app.route("/")
-def home():
+def index():
+    if "user_id" in session:
+        return redirect(url_for("dashboard"))
     return redirect(url_for("login"))
 
-# ---------------- LOGIN ----------------
 @app.route("/login", methods=["GET", "POST"])
 def login():
     if request.method == "POST":
-        email = request.form["email"]
+        username = request.form["username"]
         password = request.form["password"]
 
-        conn = get_db()
-        cursor = conn.cursor()
-        cursor.execute(
-            "SELECT email, role FROM staff WHERE email=? AND password=?",
-            (email, password)
-        )
-        user = cursor.fetchone()
-        conn.close()
-
-        if user:
-            session["email"] = user["email"]
-            session["role"] = user["role"]
+        user = User.query.filter_by(username=username).first()
+        if user and user.check_password(password):
+            session["user_id"] = user.id
+            session["username"] = user.username
+            session["role"] = user.role
             return redirect(url_for("dashboard"))
         else:
-            return render_template("login.html", error="Invalid login details")
+            flash("Invalid username or password")
 
     return render_template("login.html")
 
-# ---------------- DASHBOARD ----------------
 @app.route("/dashboard")
 def dashboard():
-    if "email" not in session:
+    if "user_id" not in session:
         return redirect(url_for("login"))
-
-    conn = get_db()
-    cursor = conn.cursor()
-
-    # Production chart
-    cursor.execute(
-        "SELECT product_name, SUM(quantity) as total FROM production GROUP BY product_name"
-    )
-    production = cursor.fetchall()
-    prod_labels = [row["product_name"] for row in production]
-    prod_values = [row["total"] for row in production]
-
-    # Store inventory
-    cursor.execute("SELECT item_name, quantity FROM store")
-    store = cursor.fetchall()
-    store_labels = [row["item_name"] for row in store]
-    store_values = [row["quantity"] for row in store]
-
-    # Low stock alert (≤ 10)
-    low_stock = [
-        f"{row['item_name']} ({row['quantity']})"
-        for row in store if row["quantity"] <= 10
-    ]
-
-    conn.close()
-
     return render_template(
         "dashboard.html",
-        email=session["email"],
-        role=session["role"],
-        prod_labels=prod_labels,
-        prod_values=prod_values,
-        store_labels=store_labels,
-        store_values=store_values,
-        low_stock=low_stock
+        username=session.get("username"),
+        role=session.get("role")
     )
 
-# ---------------- LOGOUT ----------------
 @app.route("/logout")
 def logout():
     session.clear()
     return redirect(url_for("login"))
 
-# ---------------- STORE ----------------
-@app.route("/store", methods=["GET", "POST"])
-def store():
-    if "role" not in session or session["role"] not in ["Admin", "Storekeeper"]:
-        return "Access denied"
+# ================= TEMP ADMIN CREATION =================
+# USE ONCE THEN DELETE
+@app.route("/create_admin")
+def create_admin():
+    admin = User.query.filter_by(username="admin").first()
+    if admin:
+        return "Admin already exists ✅"
 
-    conn = get_db()
-    cursor = conn.cursor()
-
-    if request.method == "POST":
-        item_name = request.form["item_name"]
-        quantity = float(request.form["quantity"])
-        unit = request.form["unit"]
-
-        cursor.execute(
-            "INSERT INTO store (item_name, quantity, unit, date_added) VALUES (?, ?, ?, date('now'))",
-            (item_name, quantity, unit)
-        )
-        conn.commit()
-
-    cursor.execute("SELECT * FROM store ORDER BY id DESC")
-    items = cursor.fetchall()
-    conn.close()
-
-    return render_template("store.html", items=items)
-
-# ---------------- PRODUCTION ----------------
-@app.route("/production", methods=["GET", "POST"])
-def production():
-    if "role" not in session or session["role"] not in ["Admin", "Staff"]:
-        return "Access denied"
-
-    conn = get_db()
-    cursor = conn.cursor()
-    message = ""
-
-    if request.method == "POST":
-        product_name = request.form["product_name"]
-        quantity = float(request.form["quantity"])
-        unit = request.form["unit"]
-        produced_by = session["email"]
-
-        # Check store availability
-        cursor.execute(
-            "SELECT id, quantity FROM store WHERE item_name=? AND unit=?",
-            (product_name, unit)
-        )
-        item = cursor.fetchone()
-
-        if not item:
-            message = "Item not found in store"
-        elif item["quantity"] < quantity:
-            message = f"Insufficient stock. Available: {item['quantity']} {unit}"
-        else:
-            new_qty = item["quantity"] - quantity
-
-            cursor.execute(
-                "UPDATE store SET quantity=? WHERE id=?",
-                (new_qty, item["id"])
-            )
-            cursor.execute(
-                "INSERT INTO production (product_name, quantity, unit, produced_by, date_produced) "
-                "VALUES (?, ?, ?, ?, date('now'))",
-                (product_name, quantity, unit, produced_by)
-            )
-            conn.commit()
-            message = "Production recorded successfully"
-
-    cursor.execute("SELECT * FROM production ORDER BY id DESC")
-    records = cursor.fetchall()
-    conn.close()
-
-    return render_template("production.html", records=records, message=message)
-
-# ---------------- ADMIN: STAFF ----------------
-@app.route("/admin/staff", methods=["GET", "POST"])
-def manage_staff():
-    if "role" not in session or session["role"] != "Admin":
-        return "Access denied"
-
-    conn = get_db()
-    cursor = conn.cursor()
-
-    if request.method == "POST":
-        action = request.form["action"]
-        email = request.form["email"]
-
-        if action == "Add":
-            password = request.form["password"]
-            role = request.form["role"]
-            cursor.execute(
-                "INSERT INTO staff (email, password, role) VALUES (?, ?, ?)",
-                (email, password, role)
-            )
-        elif action == "Delete":
-            cursor.execute("DELETE FROM staff WHERE email=?", (email,))
-
-        conn.commit()
-
-    cursor.execute("SELECT * FROM staff")
-    staff_list = cursor.fetchall()
-    conn.close()
-
-    return render_template("admin_staff.html", staff_list=staff_list)
-
-# ---------------- EXPORT PRODUCTION ----------------
-@app.route("/admin/export_production")
-def export_production():
-    if "role" not in session or session["role"] != "Admin":
-        return "Access denied"
-
-    conn = get_db()
-    cursor = conn.cursor()
-    cursor.execute("SELECT * FROM production")
-    rows = cursor.fetchall()
-    conn.close()
-
-    def generate_csv():
-        yield "ID,Product,Quantity,Unit,Produced By,Date\n"
-        for r in rows:
-            yield f"{r['id']},{r['product_name']},{r['quantity']},{r['unit']},{r['produced_by']},{r['date_produced']}\n"
-
-    return Response(
-        generate_csv(),
-        mimetype="text/csv",
-        headers={"Content-Disposition": "attachment; filename=production_report.csv"}
+    admin = User(
+        username="admin",
+        email="admin@dalafoods.com",
+        role="admin"
     )
+    admin.set_password("Admin12345")  # CHANGE AFTER LOGIN
 
-# ---------------- RUN APP ----------------
+    db.session.add(admin)
+    db.session.commit()
+    return "Admin created successfully ✅"
+
+# ================= RUN =================
 if __name__ == "__main__":
-    app.run()
+    app.run(host="0.0.0.0", port=5000)
